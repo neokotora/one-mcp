@@ -551,9 +551,9 @@ func InstallOrAddService(c *gin.Context) {
 	lang := c.GetString("lang")
 	var requestBody struct {
 		SourceType          string                 `json:"source_type" binding:"required"`
-		MCServiceID         int64                  `json:"mcp_service_id"`         // For predefined
-		PackageName         string                 `json:"package_name"`           // For marketplace
-		PackageManager      string                 `json:"package_manager"`        // For marketplace (npm, pypi, uv, pip)
+		MCServiceID         int64                  `json:"mcp_service_id"`  // For predefined
+		PackageName         string                 `json:"package_name"`    // For marketplace
+		PackageManager      string                 `json:"package_manager"` // For marketplace (npm, pypi, uv, pip)
 		SourceRef           string                 `json:"source_ref"`
 		SourceKind          string                 `json:"source_kind"`
 		Version             string                 `json:"version"`                // For marketplace
