@@ -451,6 +451,10 @@ func validateAndGetPyPIPackageInfo(ctx context.Context, packageName string) (str
 // extractPackageNameWithoutVersion extracts the package name without version specifier
 // Examples: "package@1.0.0" -> "package", "package@latest" -> "package", "package" -> "package"
 func extractPackageNameWithoutVersion(packageNameWithVersion string) string {
+	if strings.HasPrefix(packageNameWithVersion, "git+") {
+		return packageNameWithVersion
+	}
+
 	// Split by '@' and take the first part
 	// Handle scoped packages like "@scope/package@version" -> "@scope/package"
 	if strings.HasPrefix(packageNameWithVersion, "@") {
@@ -465,6 +469,34 @@ func extractPackageNameWithoutVersion(packageNameWithVersion string) string {
 		parts := strings.SplitN(packageNameWithVersion, "@", 2)
 		return parts[0]
 	}
+}
+
+func determineUVSourceKind(sourceRef string, args []string) string {
+	trimmed := strings.TrimSpace(sourceRef)
+	if trimmed != "" {
+		if strings.HasPrefix(trimmed, "git+") {
+			return "git"
+		}
+		return "pypi"
+	}
+
+	for index := 0; index < len(args); index++ {
+		if args[index] == "--from" && index+1 < len(args) {
+			if strings.HasPrefix(args[index+1], "git+") {
+				return "git"
+			}
+			return "pypi"
+		}
+	}
+
+	if len(args) > 0 && args[0] != "" && !strings.HasPrefix(args[0], "-") {
+		if strings.HasPrefix(args[0], "git+") {
+			return "git"
+		}
+		return "pypi"
+	}
+
+	return ""
 }
 
 type CustomServiceReq struct {
@@ -522,6 +554,8 @@ func InstallOrAddService(c *gin.Context) {
 		MCServiceID         int64                  `json:"mcp_service_id"`         // For predefined
 		PackageName         string                 `json:"package_name"`           // For marketplace
 		PackageManager      string                 `json:"package_manager"`        // For marketplace (npm, pypi, uv, pip)
+		SourceRef           string                 `json:"source_ref"`
+		SourceKind          string                 `json:"source_kind"`
 		Version             string                 `json:"version"`                // For marketplace
 		UserProvidedEnvVars map[string]interface{} `json:"user_provided_env_vars"` // Interface to handle potential type issues from UI, convert to string later.
 		DisplayName         string                 `json:"display_name"`           // Optional: for creating MCPService
@@ -575,8 +609,20 @@ func InstallOrAddService(c *gin.Context) {
 			return
 		}
 
+		uvSourceKind := ""
+		if requestBody.PackageManager == "pypi" || requestBody.PackageManager == "uv" || requestBody.PackageManager == "pip" {
+			uvSourceKind = determineUVSourceKind(requestBody.SourceRef, requestBody.CustomArgs)
+			if requestBody.SourceKind != "" {
+				uvSourceKind = requestBody.SourceKind
+			}
+		}
+
 		// Extract package name without version for API calls
 		cleanPackageName := extractPackageNameWithoutVersion(requestBody.PackageName)
+		lookupPackageName := cleanPackageName
+		if uvSourceKind == "git" && requestBody.SourceRef != "" {
+			lookupPackageName = requestBody.SourceRef
+		}
 
 		// Check tool availability
 		if requestBody.PackageManager == "npm" && !market.CheckNPXAvailable() {
@@ -590,10 +636,13 @@ func InstallOrAddService(c *gin.Context) {
 		}
 
 		// Check for existing services using clean package name, but also check exact match
-		existingServices, err := model.GetServicesByPackageDetails(requestBody.PackageManager, cleanPackageName)
+		existingServices, err := model.GetServicesByPackageDetails(requestBody.PackageManager, lookupPackageName)
 		if err == nil && len(existingServices) == 0 {
 			// Also check for exact match in case the stored package name includes version
 			existingServices, err = model.GetServicesByPackageDetails(requestBody.PackageManager, requestBody.PackageName)
+			if err == nil && len(existingServices) == 0 && requestBody.SourceRef != "" {
+				existingServices, err = model.GetServicesByPackageDetails(requestBody.PackageManager, requestBody.SourceRef)
+			}
 		}
 
 		if err == nil && len(existingServices) > 0 {
@@ -648,14 +697,18 @@ func InstallOrAddService(c *gin.Context) {
 				}
 			}
 		case "pypi", "uv", "pip":
-			// PyPI package validation and get description info
-			description, err := validateAndGetPyPIPackageInfo(c.Request.Context(), cleanPackageName)
-			if err != nil {
-				common.RespError(c, http.StatusBadRequest,
-					i18n.Translate("package_not_found", lang, requestBody.PackageName), err)
-				return
+			if uvSourceKind == "git" {
+				packageDescription = requestBody.ServiceDescription
+			} else {
+				// PyPI package validation and get description info
+				description, err := validateAndGetPyPIPackageInfo(c.Request.Context(), cleanPackageName)
+				if err != nil {
+					common.RespError(c, http.StatusBadRequest,
+						i18n.Translate("package_not_found", lang, requestBody.PackageName), err)
+					return
+				}
+				packageDescription = description
 			}
-			packageDescription = description
 			// TODO: Implement automatic environment variable discovery for PyPI packages
 		}
 		// Check if all required environment variables are provided
@@ -687,6 +740,11 @@ func InstallOrAddService(c *gin.Context) {
 			serviceDescription = packageDescription
 		}
 
+		sourcePackageName := requestBody.PackageName
+		if uvSourceKind == "git" && requestBody.SourceRef != "" {
+			sourcePackageName = requestBody.SourceRef
+		}
+
 		newService := model.MCPService{
 			Name:                  sanitizeServiceName(requestBody.PackageName),
 			DisplayName:           displayName,
@@ -695,7 +753,7 @@ func InstallOrAddService(c *gin.Context) {
 			Icon:                  requestBody.ServiceIconURL,
 			Type:                  model.ServiceTypeStdio,
 			PackageManager:        requestBody.PackageManager,
-			SourcePackageName:     requestBody.PackageName,
+			SourcePackageName:     sourcePackageName,
 			ClientConfigTemplates: "{}",
 			Enabled:               true, // 安装时直接启用服务
 			HealthStatus:          string(market.StatusPending),
@@ -1924,7 +1982,7 @@ func createSingleServiceFromBatch(ctx context.Context, serviceName string, servi
 		// Case 1: uvx --from package_name command (args: ["--from", "package_name", "command"])
 		for i, arg := range req.Args {
 			if arg == "--from" && i+1 < len(req.Args) {
-				packageManager = "pypi"
+				packageManager = "uv"
 				sourcePackageName = req.Args[i+1]
 				break
 			}
@@ -1935,7 +1993,7 @@ func createSingleServiceFromBatch(ctx context.Context, serviceName string, servi
 			// First arg is typically the package name if no --from is used
 			firstArg := req.Args[0]
 			if firstArg != "" && !strings.HasPrefix(firstArg, "-") {
-				packageManager = "pypi"
+				packageManager = "uv"
 				sourcePackageName = firstArg
 			}
 		}
@@ -1946,6 +2004,11 @@ func createSingleServiceFromBatch(ctx context.Context, serviceName string, servi
 	// Get real package information if it's from npm or pypi
 	var packageDescription string
 	var packageVersion string
+	uvSourceKind := ""
+	if packageManager == "uv" || packageManager == "pypi" || packageManager == "pip" {
+		uvSourceKind = determineUVSourceKind(sourcePackageName, req.Args)
+	}
+
 	switch packageManager {
 	case "npm":
 		// Extract package name without version for API calls
@@ -1957,7 +2020,10 @@ func createSingleServiceFromBatch(ctx context.Context, serviceName string, servi
 		} else {
 			common.SysLog(fmt.Sprintf("WARNING: Failed to get npm package details for %s: %v", cleanPackageName, err))
 		}
-	case "pypi":
+	case "pypi", "uv", "pip":
+		if uvSourceKind == "git" {
+			break
+		}
 		// Extract package name without version
 		cleanPackageName := sourcePackageName
 		if strings.Contains(cleanPackageName, "==") {

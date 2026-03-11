@@ -18,6 +18,7 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
+import { extractPackageInfo, tokenizeCommand } from '@/utils/command';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -126,103 +127,6 @@ export function ServicesPage() {
             }
             return acc;
         }, {} as Record<string, string>);
-    };
-
-    const tokenizeCommand = (command?: string): string[] => {
-        if (!command) return [];
-        const tokens: string[] = [];
-        let current = '';
-        let quote: '"' | "'" | '`' | null = null;
-
-        for (let i = 0; i < command.length; i++) {
-            const char = command[i];
-
-            if (quote) {
-                if (char === quote) {
-                    quote = null;
-                } else if (char === '\\' && quote === '"' && i + 1 < command.length) {
-                    // Preserve escaped characters inside double quotes
-                    current += command[i + 1];
-                    i += 1;
-                } else {
-                    current += char;
-                }
-                continue;
-            }
-
-            if (char === '"' || char === "'" || char === '`') {
-                quote = char;
-                continue;
-            }
-
-            if (/\s/.test(char)) {
-                if (current) {
-                    tokens.push(current);
-                    current = '';
-                }
-                continue;
-            }
-
-            if (char === '\\' && i + 1 < command.length) {
-                current += command[i + 1];
-                i += 1;
-                continue;
-            }
-
-            current += char;
-        }
-
-        if (current) {
-            tokens.push(current);
-        }
-
-        return tokens;
-    };
-
-    const extractPackageInfo = (tokens: string[]): { packageManager: '' | 'npm' | 'uv'; packageName: string } => {
-        if (tokens.length === 0) {
-            return { packageManager: '', packageName: '' };
-        }
-
-        const [managerToken, ...args] = tokens;
-        if (managerToken !== 'npx' && managerToken !== 'uvx') {
-            return { packageManager: '', packageName: '' };
-        }
-
-        const booleanFlags =
-            managerToken === 'npx'
-                ? new Set(['-y', '--yes', '--no-install', '--prefer-offline', '--quiet'])
-                : new Set(['--quiet', '--preview', '--system', '--strict']);
-
-        let packageName = '';
-        for (let i = 0; i < args.length; i++) {
-            const arg = args[i];
-
-            if (arg === '--') {
-                if (i + 1 < args.length) {
-                    packageName = args[i + 1];
-                }
-                break;
-            }
-
-            if (arg.startsWith('-')) {
-                const normalized = arg.includes('=') ? arg.split('=')[0] : arg;
-                if (booleanFlags.has(normalized) || arg.includes('=')) {
-                    continue;
-                }
-
-                if (i + 1 < args.length) {
-                    i += 1;
-                }
-                continue;
-            }
-
-            packageName = arg;
-            break;
-        }
-
-        const packageManager = managerToken === 'npx' ? 'npm' : 'uv';
-        return { packageManager, packageName };
     };
 
     const handleToggleService = async (serviceId: string) => {
@@ -345,7 +249,7 @@ export function ServicesPage() {
 
                 const commandTokens = tokenizeCommand(command);
                 const customArgs = commandTokens.length > 1 ? commandTokens.slice(1) : [];
-                const { packageManager, packageName } = extractPackageInfo(commandTokens);
+                const { packageManager, packageName, sourceKind, sourceRef } = extractPackageInfo(commandTokens);
 
                 if (!packageManager || !packageName) {
                     throw new Error(t('customServiceModal.messages.parseCommandFailed'));
@@ -355,6 +259,8 @@ export function ServicesPage() {
                     source_type: 'custom',
                     package_name: packageName,
                     package_manager: packageManager,
+                    source_kind: sourceKind,
+                    source_ref: sourceRef,
                     display_name: serviceData.name,
                     user_provided_env_vars: parseEnvironments(serviceData.environments),
                     custom_args: customArgs.length > 0 ? customArgs : undefined, // Send custom args if available

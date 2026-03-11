@@ -241,6 +241,9 @@ func (m *InstallationManager) updateServiceStatus(task *InstallationTask, server
 			serviceToUpdate.Command = "uvx"
 			if serviceToUpdate.ArgsJSON == "" {
 				args := []string{"--from", serviceToUpdate.SourcePackageName, serviceToUpdate.SourcePackageName}
+				if strings.HasPrefix(serviceToUpdate.SourcePackageName, "git+") {
+					args = []string{"--from", serviceToUpdate.SourcePackageName, serviceToUpdate.Name}
+				}
 				argsJSON, err := json.Marshal(args)
 				if err != nil {
 					log.Printf("[InstallationManager] Error marshaling args for python package %s: %v", serviceToUpdate.SourcePackageName, err)
