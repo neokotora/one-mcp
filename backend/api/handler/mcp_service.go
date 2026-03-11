@@ -101,10 +101,10 @@ func UpdateMCPService(c *gin.Context) {
 		if service.ArgsJSON == "" && service.SourcePackageName != "" {
 			service.ArgsJSON = fmt.Sprintf(`["-y", "%s"]`, service.SourcePackageName)
 		}
-	} else if service.PackageManager == "pypi" {
+	} else if service.PackageManager == "pypi" || service.PackageManager == "uv" || service.PackageManager == "pip" {
 		service.Command = "uvx"
 		if service.ArgsJSON == "" && service.SourcePackageName != "" {
-			service.ArgsJSON = fmt.Sprintf(`["-y", "%s"]`, service.SourcePackageName)
+			service.ArgsJSON = fmt.Sprintf(`["--from", "%s", "%s"]`, service.SourcePackageName, service.SourcePackageName)
 		}
 	} // Add else if for other package managers or if service.PackageManager == "" to potentially clear Command/ArgsJSON if they were auto-set.
 	// For now, if PackageManager is not npm or pypi, Command and ArgsJSON remain as bound from request.
