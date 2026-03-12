@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"one-mcp/backend/model"
@@ -26,12 +27,21 @@ const (
 
 // CheckUVXAvailable checks if the 'uv' command is available.
 func CheckUVXAvailable() bool {
-	cmd := exec.Command("uv", "--version")
-	if err := cmd.Run(); err != nil {
-		// Consider logging the error for debugging, e.g., log.Printf("uv command not found: %v", err)
-		return false
+	if err := exec.Command("uvx", "--version").Run(); err == nil {
+		return true
 	}
-	return true
+	if err := exec.Command("uv", "--version").Run(); err == nil {
+		return true
+	}
+	return false
+}
+
+func isUVXCommand(command string) bool {
+	return command == "uvx"
+}
+
+func isUVXAvailable() bool {
+	return exec.Command("uvx", "--version").Run() == nil
 }
 
 // InstallPyPIPackage installs a Python package using uv, creates a virtual environment,
@@ -40,6 +50,57 @@ func CheckUVXAvailable() bool {
 func InstallPyPIPackage(ctx context.Context, packageName, version, command string, args []string, workDir string, envVars map[string]string) (*MCPServerInfo, error) {
 	if !CheckUVXAvailable() {
 		return nil, fmt.Errorf("uv command is not available")
+	}
+
+	// If the service is configured to run through uv/uvx, let uvx manage
+	// the environment and installation (PyPI, git+..., etc.).
+	// This avoids incorrectly treating non-PyPI sources as PyPI registry packages.
+	if isUVXCommand(command) {
+		if !isUVXAvailable() {
+			return nil, fmt.Errorf("uvx command is not available")
+		}
+
+		mcpCommandPath := command
+
+		effectiveEnv := os.Environ()
+		for key, value := range envVars {
+			effectiveEnv = append(effectiveEnv, fmt.Sprintf("%s=%s", key, value))
+		}
+
+		mcpClient, err := client.NewStdioMCPClient(mcpCommandPath, effectiveEnv, args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create MCP client for %s: %w", packageName, err)
+		}
+		defer mcpClient.Close()
+
+		initCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+
+		if err := mcpClient.Start(initCtx); err != nil {
+			return nil, fmt.Errorf("failed to start MCP client for %s: %w", packageName, err)
+		}
+
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    "one-mcp",
+			Version: "1.0.0",
+		}
+		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+		initResult, err := mcpClient.Initialize(initCtx, initRequest)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize MCP client for %s: %w", packageName, err)
+		}
+
+		serverInfo := &MCPServerInfo{
+			Name:            initResult.ServerInfo.Name,
+			Version:         initResult.ServerInfo.Version,
+			ProtocolVersion: initResult.ProtocolVersion,
+			Capabilities:    initResult.Capabilities,
+		}
+
+		return serverInfo, nil
 	}
 
 	// Ensure the base directory for virtual environments exists
@@ -62,6 +123,9 @@ func InstallPyPIPackage(ctx context.Context, packageName, version, command strin
 	packageToInstall := packageName
 	if version != "" && version != "latest" {
 		packageToInstall = fmt.Sprintf("%s==%s", packageName, version)
+	}
+	if strings.TrimSpace(packageToInstall) == "" {
+		return nil, fmt.Errorf("empty package name")
 	}
 
 	pythonExecutable := filepath.Join(pkgVenvDir, "bin", "python")

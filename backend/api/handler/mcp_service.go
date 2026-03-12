@@ -11,6 +11,7 @@ import (
 	"one-mcp/backend/library/proxy"
 	"one-mcp/backend/model"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -104,7 +105,11 @@ func UpdateMCPService(c *gin.Context) {
 	} else if service.PackageManager == "pypi" || service.PackageManager == "uv" || service.PackageManager == "pip" {
 		service.Command = "uvx"
 		if service.ArgsJSON == "" && service.SourcePackageName != "" {
-			service.ArgsJSON = fmt.Sprintf(`["--from", "%s", "%s"]`, service.SourcePackageName, service.SourcePackageName)
+			uvxCommand := service.SourcePackageName
+			if strings.HasPrefix(service.SourcePackageName, "git+") {
+				uvxCommand = service.Name
+			}
+			service.ArgsJSON = fmt.Sprintf(`["--from", "%s", "%s"]`, service.SourcePackageName, uvxCommand)
 		}
 	} // Add else if for other package managers or if service.PackageManager == "" to potentially clear Command/ArgsJSON if they were auto-set.
 	// For now, if PackageManager is not npm or pypi, Command and ArgsJSON remain as bound from request.
